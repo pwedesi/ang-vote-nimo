@@ -1,12 +1,20 @@
 import json
+import logging
 import os
 import threading
+import time
 
 from flask import Flask
 from google.cloud import firestore, pubsub_v1
 
 db = firestore.Client()
 app = Flask(__name__)
+
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("vote-worker")
 
 REQUIRED_FIELDS = ["user_id", "poll_id", "choice", "edge_id"]
 
@@ -26,7 +34,7 @@ def process_vote(message):
     try:
         # Step 1: Receive and decode message
         vote = json.loads(message.data.decode("utf-8"))
-        print(f"Received vote: {vote}")
+        logger.info("Received vote user_id=%s poll_id=%s edge_id=%s", vote.get("user_id"), vote.get("poll_id"), vote.get("edge_id"))
         
         # Validate the vote structure
         validate_vote(vote)
@@ -38,26 +46,26 @@ def process_vote(message):
         doc = doc_ref.get()
         
         if doc.exists:
-            print(f"Duplicate vote ignored: {doc_id}")
+            logger.info("Duplicate vote ignored doc_id=%s", doc_id)
             message.ack()
             return
         
         # Step 3: Store Processed Votes in Firestore
         doc_ref.set(vote)
-        print(f"Vote stored in Firestore: {doc_id}")
+        logger.info("Vote stored in Firestore doc_id=%s", doc_id)
         
         # Step 4: Acknowledge message after successful processing
         message.ack()
-        print(f"Message acknowledged: {doc_id}")
+        logger.info("Message acknowledged doc_id=%s", doc_id)
         
     except json.JSONDecodeError as e:
-        print(f"Malformed message data: {e}")
+        logger.warning("Malformed message data error=%s", e)
         message.nack()
     except ValueError as e:
-        print(f"Validation error: {e}")
+        logger.warning("Validation error error=%s", e)
         message.nack()
     except Exception as e:
-        print(f"Processing error: {e}")
+        logger.exception("Processing error error=%s", e)
         message.nack()
 
 
@@ -75,22 +83,33 @@ def pull_and_process_votes():
     The worker runs continuously, listening for new messages without manual intervention.
     This reflects the nature of real-world distributed processing systems.
     """
-    subscriber = pubsub_v1.SubscriberClient()
     project_id = os.environ.get("GCP_PROJECT_ID", "ang-vote-nimo")
     subscription_id = os.environ.get("PUBSUB_SUBSCRIPTION", "vote-sub")
-    subscription_path = subscriber.subscription_path(project_id, subscription_id)
-    
-    print(f"Worker started. Listening to subscription: {subscription_path}")
-    
-    streaming_pull_future = subscriber.subscribe(subscription_path, callback=process_vote)
-    
-    try:
-        # Keep the subscriber running indefinitely
-        streaming_pull_future.result(timeout=None)
-    except KeyboardInterrupt:
-        print("Stopping worker...")
-        streaming_pull_future.cancel()
-        streaming_pull_future.result()
+
+    while True:
+        subscriber = None
+        streaming_pull_future = None
+        try:
+            logger.info("Subscriber thread starting")
+            subscriber = pubsub_v1.SubscriberClient()
+            subscription_path = subscriber.subscription_path(project_id, subscription_id)
+            logger.info("Worker listening subscription=%s", subscription_path)
+
+            streaming_pull_future = subscriber.subscribe(subscription_path, callback=process_vote)
+            streaming_pull_future.result(timeout=None)
+        except KeyboardInterrupt:
+            logger.info("Stopping worker")
+            if streaming_pull_future is not None:
+                streaming_pull_future.cancel()
+            break
+        except Exception as e:
+            logger.exception("Subscriber loop error error=%s", e)
+            time.sleep(5)
+        finally:
+            if streaming_pull_future is not None:
+                streaming_pull_future.cancel()
+            if subscriber is not None:
+                subscriber.close()
 
 
 if __name__ == "__main__":
@@ -101,5 +120,5 @@ if __name__ == "__main__":
     pubsub_thread.start()
     
     # Start Flask health check server in main thread
-    print(f"Starting Flask health check server on port {port}")
+    logger.info("Starting Flask health check server port=%s", port)
     app.run(host="0.0.0.0", port=port, threaded=True)
