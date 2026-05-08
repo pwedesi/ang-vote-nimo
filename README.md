@@ -7,7 +7,7 @@ Overview
 - This repository contains a small distributed voting prototype composed of three components:
 	- `api` — HTTP API service for clients and vote aggregation ([api/main.py](api/main.py)).
 	- `edge` — Edge node that accepts local votes and forwards them ([edge/edge_node.py](edge/edge_node.py)).
-	- `worker` — Background worker for processing and persisting votes (Dockerfile at [worker/Dockerfile](worker/Dockerfile)).
+	- `worker` — Cloud Run HTTP worker that receives Pub/Sub push messages and persists idempotent votes to Firestore ([worker/main.py](worker/main.py)).
 
 Architecture
 - Components communicate using cloud messaging and storage (configure Google Cloud Pub/Sub, Firestore or Cloud Storage as needed).
@@ -52,6 +52,14 @@ Google Cloud setup
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+```
+
+- Configure Pub/Sub push delivery to the worker Cloud Run URL:
+
+```bash
+gcloud pubsub subscriptions update vote-sub \
+  --push-endpoint=https://<worker-cloud-run-url>/ \
+  --push-auth-service-account=<SERVICE_ACCOUNT_EMAIL>
 ```
 
 Notes and security
