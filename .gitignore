@@ -92,6 +92,7 @@ secrets/
 # Ignore service account JSONs explicitly
 *.gcloud.json
 *service-account*.json
+observer/cs323-voting-system-pwedesi-31839a5ba06d.json
 
 # Docker
 docker-compose.override.yml

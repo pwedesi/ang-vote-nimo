@@ -7,6 +7,7 @@ Overview
 - This repository contains a small distributed voting prototype composed of three components:
 	- `api` — HTTP API service for clients and vote aggregation ([api/main.py](api/main.py)).
 	- `edge` — Edge node that accepts local votes and forwards them ([edge/edge_node.py](edge/edge_node.py)).
+	- `edge` — Multi-edge launcher for timed runs ([edge/run_edges.py](edge/run_edges.py)).
 	- `worker` — Cloud Run HTTP worker that receives Pub/Sub push messages and persists idempotent votes to Firestore ([worker/main.py](worker/main.py)).
 
 Architecture
@@ -36,6 +37,13 @@ pip install -r worker/requirements.txt
 python api/main.py
 python edge/edge_node.py
 python worker/main.py
+```
+
+Run several edge nodes for a fixed duration:
+
+```bash
+cd edge
+python run_edges.py --nodes 3 --seconds 20 --api-url "https://vote-api-cm2ntl2x6q-as.a.run.app/vote"
 ```
 
 Docker (worker)
@@ -69,6 +77,7 @@ Notes and security
 Repository layout
 - [api/main.py](api/main.py)
 - [edge/edge_node.py](edge/edge_node.py)
+- [edge/run_edges.py](edge/run_edges.py)
 - [worker/main.py](worker/main.py)
 - [worker/Dockerfile](worker/Dockerfile)
 - [observer/main.py](observer/main.py)
