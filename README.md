@@ -71,6 +71,38 @@ Repository layout
 - [edge/edge_node.py](edge/edge_node.py)
 - [worker/main.py](worker/main.py)
 - [worker/Dockerfile](worker/Dockerfile)
+- [observer/main.py](observer/main.py)
+- [observer/Dockerfile](observer/Dockerfile)
+
+Vote observer
+- A simple Firestore-backed dashboard lives in [observer/main.py](observer/main.py).
+- It shows total votes, counts by choice, counts by edge node, and the most recent stored votes.
+- Local configuration lives in [observer/.env](observer/.env) and points to the service-account JSON file.
+- Run it locally with:
+
+```bash
+cd observer
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+set -a
+source .env
+set +a
+python main.py
+```
+
+- Deploy it to Cloud Run with:
+
+```bash
+gcloud run deploy vote-observer \
+	--source=observer \
+	--region=asia-southeast1 \
+	--project=cs323-voting-system-pwedesi \
+	--allow-unauthenticated \
+	--set-env-vars="GCP_PROJECT_ID=cs323-voting-system-pwedesi,FIRESTORE_COLLECTION=votes"
+```
+
+- Open `GET /` for the dashboard, `GET /api/summary` for JSON, and `GET /healthz` for health checks.
 
 License
 - MIT (replace or update as needed)
