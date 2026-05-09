@@ -3,11 +3,6 @@
 
 Distributed voting system built on Google Cloud.
 
-Latency benchmarking
-- Each vote now carries a generation timestamp from the edge, plus API receipt and publish timestamps, and worker processing timestamps.
-- The worker stores `end_to_end_latency_ms` and `api_to_worker_latency_ms` in Firestore for each processed vote.
-- The observer dashboard shows latency averages, min/max values, and per-vote end-to-end latency in the recent votes table.
-- To benchmark the system, run several edge nodes, let the pipeline settle, then compare the latency cards in the observer during normal load, worker downtime, and recovery.
 
 Reflection - Hans Matthew E. Del Mundo
 
