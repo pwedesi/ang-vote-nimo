@@ -11,15 +11,44 @@ db = firestore.Client()
 
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "cs323-voting-system-pwedesi")
 COLLECTION_NAME = os.environ.get("FIRESTORE_COLLECTION", "votes")
-MAX_RECENT = int(os.environ.get("MAX_RECENT_VOTES", "25"))
 
 
-def _format_timestamp(value):
+def _format_latency(value):
     if value is None:
         return ""
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
+    try:
+        return f"{float(value):.3f} ms"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _collect_latency(votes, field_name):
+    values = []
+    for vote in votes:
+        raw_value = vote.get(field_name)
+        if raw_value is None:
+            continue
+        try:
+            parsed = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            values.append(parsed)
+    return values
+
+
+def _resolve_worker_latency(vote):
+    for field_name in ("worker_total_ms", "cloud_latency_ms"):
+        raw_value = vote.get(field_name)
+        if raw_value is None:
+            continue
+        try:
+            parsed = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            return parsed
+    return None
 
 
 def _load_votes():
@@ -39,11 +68,22 @@ def _load_votes_safe():
         return [], str(exc)
 
 
+def _latency_stats(values):
+    if not values:
+        return {"count": 0, "avg_ms": None, "min_ms": None, "max_ms": None}
+    return {
+        "count": len(values),
+        "avg_ms": round(sum(values) / len(values), 3),
+        "min_ms": round(min(values), 3),
+        "max_ms": round(max(values), 3),
+    }
+
+
 def _summarize_votes(votes):
-    total = len(votes)
-    unique_edges = sorted({str(v.get("edge_id", "unknown")) for v in votes})
     choice_counts = {}
     edge_counts = {}
+    worker_latencies = []
+    firestore_write_latencies = _collect_latency(votes, "firestore_write_ms")
 
     for vote in votes:
         choice = str(vote.get("choice", "unknown"))
@@ -51,35 +91,33 @@ def _summarize_votes(votes):
         choice_counts[choice] = choice_counts.get(choice, 0) + 1
         edge_counts[edge_id] = edge_counts.get(edge_id, 0) + 1
 
-    def sort_map(mapping):
-        return sorted(mapping.items(), key=lambda item: (-item[1], item[0]))
+        worker_latency = _resolve_worker_latency(vote)
+        if worker_latency is not None:
+            worker_latencies.append(worker_latency)
 
-    choice_sorted = sort_map(choice_counts)
-    edge_sorted = sort_map(edge_counts)
-
-    recent_votes = sorted(
-        votes,
-        key=lambda vote: vote.get("timestamp", 0),
-        reverse=True,
-    )[:MAX_RECENT]
+    choice_sorted = sorted(choice_counts.items(), key=lambda item: (-item[1], item[0]))
+    edge_sorted = sorted(edge_counts.items(), key=lambda item: (-item[1], item[0]))
 
     return {
         "project_id": PROJECT_ID,
         "collection_name": COLLECTION_NAME,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "total_votes": total,
-        "unique_edges": unique_edges,
+        "total_votes": len(votes),
+        "unique_edges": sorted(edge_counts.keys()),
         "choice_counts": choice_sorted,
         "edge_counts": edge_sorted,
         "chart_labels": {
-          "choices": [label for label, _ in choice_sorted],
-          "edges": [label for label, _ in edge_sorted],
+            "choices": [label for label, _ in choice_sorted],
+            "edges": [label for label, _ in edge_sorted],
         },
         "chart_values": {
-          "choices": [count for _, count in choice_sorted],
-          "edges": [count for _, count in edge_sorted],
+            "choices": [count for _, count in choice_sorted],
+            "edges": [count for _, count in edge_sorted],
         },
-        "recent_votes": recent_votes,
+        "latency_stats": {
+            "worker": _latency_stats(worker_latencies),
+            "firestore_write": _latency_stats(firestore_write_latencies),
+        },
     }
 
 
@@ -88,32 +126,12 @@ def dashboard():
     votes, load_error = _load_votes_safe()
     summary = _summarize_votes(votes)
 
-    rows = []
-    for vote in summary["recent_votes"]:
-        rows.append(
-            f"""
-            <tr>
-              <td>{vote.get('doc_id', '')}</td>
-              <td>{vote.get('user_id', '')}</td>
-              <td>{vote.get('poll_id', '')}</td>
-              <td>{vote.get('choice', '')}</td>
-              <td>{vote.get('edge_id', '')}</td>
-              <td>{_format_timestamp(vote.get('timestamp'))}</td>
-            </tr>
-            """
-        )
-
     choice_items = "".join(
         f"<li><strong>{choice}</strong>: {count}</li>" for choice, count in summary["choice_counts"]
     ) or "<li>No votes yet</li>"
     edge_items = "".join(
         f"<li><strong>{edge}</strong>: {count}</li>" for edge, count in summary["edge_counts"]
     ) or "<li>No votes yet</li>"
-
-    choice_labels = summary["chart_labels"]["choices"]
-    choice_values = summary["chart_values"]["choices"]
-    edge_labels = summary["chart_labels"]["edges"]
-    edge_values = summary["chart_values"]["edges"]
 
     html = f"""
     <!doctype html>
@@ -126,12 +144,8 @@ def dashboard():
       <style>
         :root {{
           --bg: #0b1020;
-          --panel: #11182d;
-          --panel-2: #18213a;
           --text: #eaf0ff;
           --muted: #98a6c7;
-          --accent: #4dd0e1;
-          --accent-2: #8e7dff;
           --border: rgba(255,255,255,0.08);
         }}
         * {{ box-sizing: border-box; }}
@@ -147,39 +161,21 @@ def dashboard():
         header {{ display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; align-items: end; margin-bottom: 24px; }}
         h1 {{ margin: 0; font-size: 2rem; letter-spacing: -0.03em; }}
         .sub {{ color: var(--muted); margin-top: 8px; }}
-        .pill {{
-          display: inline-flex; align-items: center; gap: 8px;
-          padding: 8px 12px; border: 1px solid var(--border); border-radius: 999px;
-          background: rgba(255,255,255,0.04); color: var(--muted);
-        }}
+        .pill {{ display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255,255,255,0.04); color: var(--muted); }}
         .grid {{ display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin: 20px 0; }}
-        .card {{
-          background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
-          border: 1px solid var(--border); border-radius: 18px; padding: 18px;
-          box-shadow: 0 12px 40px rgba(0,0,0,0.22);
-        }}
+        .card {{ background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border: 1px solid var(--border); border-radius: 18px; padding: 18px; box-shadow: 0 12px 40px rgba(0,0,0,0.22); }}
         .metric {{ font-size: 2rem; font-weight: 700; margin-top: 10px; }}
         .two-col {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }}
         @media (max-width: 860px) {{ .two-col {{ grid-template-columns: 1fr; }} }}
         h2 {{ margin: 0 0 12px; font-size: 1.05rem; }}
         ul {{ margin: 0; padding-left: 18px; color: var(--muted); }}
-        table {{ width: 100%; border-collapse: collapse; }}
-        th, td {{ text-align: left; padding: 10px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }}
-        th {{ color: var(--muted); font-weight: 600; font-size: 0.88rem; }}
-        td {{ color: var(--text); font-size: 0.92rem; word-break: break-word; }}
         .muted {{ color: var(--muted); }}
         .note {{ margin-top: 8px; color: var(--muted); font-size: 0.92rem; }}
-        .error {{
-          margin: 18px 0 0;
-          padding: 14px 16px;
-          border-radius: 14px;
-          border: 1px solid rgba(255, 122, 122, 0.35);
-          background: rgba(255, 122, 122, 0.08);
-          color: #ffd7d7;
-        }}
+        .error {{ margin: 18px 0 0; padding: 14px 16px; border-radius: 14px; border: 1px solid rgba(255, 122, 122, 0.35); background: rgba(255, 122, 122, 0.08); color: #ffd7d7; }}
         .chart-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }}
         .chart-wrap {{ position: relative; height: 320px; }}
         .small {{ font-size: 0.88rem; color: var(--muted); }}
+        .latency-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 16px; }}
       </style>
     </head>
     <body>
@@ -187,9 +183,7 @@ def dashboard():
         <header>
           <div>
             <h1>Vote Observer</h1>
-            <div class="sub">Firestore-backed snapshot of the distributed voting system. Charts auto-refresh every 5 seconds.</div>
           </div>
-          <div class="pill">Project: {summary['project_id']} · Collection: {summary['collection_name']} · Updated: {summary['generated_at']}</div>
         </header>
 
         <div class="grid">
@@ -199,83 +193,47 @@ def dashboard():
         </div>
 
         <div class="card">
+          <h2>Latency benchmark</h2>
+          <div class="note">These are service-local durations, so they do not depend on edge-clock alignment.</div>
+          <div class="latency-grid">
+            <div class="card">
+              <div class="muted">Worker total average</div>
+              <div class="metric" id="avgWorker">{_format_latency(summary['latency_stats']['worker']['avg_ms'])}</div>
+              <div class="small">Min: <span id="minWorker">{_format_latency(summary['latency_stats']['worker']['min_ms'])}</span> · Max: <span id="maxWorker">{_format_latency(summary['latency_stats']['worker']['max_ms'])}</span></div>
+            </div>
+            <div class="card">
+              <div class="muted">Firestore write average</div>
+              <div class="metric" id="avgFirestoreWrite">{_format_latency(summary['latency_stats']['firestore_write']['avg_ms'])}</div>
+              <div class="small">Min: <span id="minFirestoreWrite">{_format_latency(summary['latency_stats']['firestore_write']['min_ms'])}</span> · Max: <span id="maxFirestoreWrite">{_format_latency(summary['latency_stats']['firestore_write']['max_ms'])}</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
           <h2>Live vote breakdown</h2>
           <div class="small">The charts below auto-refresh every 5 seconds by polling <code>/api/summary</code>. This is live polling, not websocket push.</div>
           <div class="chart-grid">
-            <div class="card">
-              <h2>Votes by Choice</h2>
-              <div class="chart-wrap"><canvas id="choiceChart"></canvas></div>
-            </div>
-            <div class="card">
-              <h2>Votes by Edge</h2>
-              <div class="chart-wrap"><canvas id="edgeChart"></canvas></div>
-            </div>
+            <div class="card"><h2>Votes by Choice</h2><div class="chart-wrap"><canvas id="choiceChart"></canvas></div></div>
+            <div class="card"><h2>Votes by Edge</h2><div class="chart-wrap"><canvas id="edgeChart"></canvas></div></div>
           </div>
         </div>
 
         {f'<div class="error"><strong>Firestore access denied.</strong> {load_error}</div>' if load_error else ''}
 
-        <div class="two-col">
-          <section class="card">
-            <h2>Votes by Choice</h2>
-            <ul id="choiceList">{choice_items}</ul>
-          </section>
-          <section class="card">
-            <h2>Votes by Edge</h2>
-            <ul id="edgeList">{edge_items}</ul>
-          </section>
-        </div>
-
-        <section class="card" style="margin-top:16px;">
-          <h2>Recent Votes</h2>
-          <div class="note">This table shows the newest stored Firestore documents. It helps you observe ingestion, duplication, and recovery behavior.</div>
-          <div style="overflow-x:auto; margin-top: 12px;">
-            <table>
-              <thead>
-                <tr>
-                  <th>Doc ID</th>
-                  <th>User</th>
-                  <th>Poll</th>
-                  <th>Choice</th>
-                  <th>Edge</th>
-                  <th>Timestamp</th>
-                </tr>
-              </thead>
-              <tbody id="recentVotesBody">
-                {''.join(rows) if rows else '<tr><td colspan="6" class="muted">No votes stored yet.</td></tr>'}
-              </tbody>
-            </table>
-          </div>
-        </section>
       </div>
       <script>
         const loadError = {json.dumps(load_error)};
         const choiceCtx = document.getElementById('choiceChart');
         const edgeCtx = document.getElementById('edgeChart');
 
-        const chartColors = [
-          '#4dd0e1', '#8e7dff', '#ffb86b', '#7ee081', '#ff6b8b', '#a6e3a1', '#ffd166', '#6ec6ff'
-        ];
+        const chartColors = ['#4dd0e1', '#8e7dff', '#ffb86b', '#7ee081', '#ff6b8b', '#a6e3a1', '#ffd166', '#6ec6ff'];
 
         function makeDoughnut(ctx, labels, values, title) {{
           if (!ctx) return null;
           return new Chart(ctx, {{
             type: 'doughnut',
-            data: {{
-              labels,
-              datasets: [{{
-                label: title,
-                data: values,
-                backgroundColor: labels.map((_, index) => chartColors[index % chartColors.length]),
-                borderColor: 'rgba(255,255,255,0.08)',
-                borderWidth: 1,
-              }}],
-            }},
-            options: {{
-              responsive: true,
-              maintainAspectRatio: false,
-              plugins: {{ legend: {{ position: 'bottom', labels: {{ color: '#eaf0ff' }} }} }},
-            }},
+            data: {{ labels, datasets: [{{ label: title, data: values, backgroundColor: labels.map((_, index) => chartColors[index % chartColors.length]), borderColor: 'rgba(255,255,255,0.08)', borderWidth: 1 }}] }},
+            options: {{ responsive: true, maintainAspectRatio: false, plugins: {{ legend: {{ position: 'bottom', labels: {{ color: '#eaf0ff' }} }} }} }},
           }});
         }}
 
@@ -283,15 +241,7 @@ def dashboard():
           if (!ctx) return null;
           return new Chart(ctx, {{
             type: 'bar',
-            data: {{
-              labels,
-              datasets: [{{
-                label: title,
-                data: values,
-                backgroundColor: '#8e7dff',
-                borderRadius: 10,
-              }}],
-            }},
+            data: {{ labels, datasets: [{{ label: title, data: values, backgroundColor: '#8e7dff', borderRadius: 10 }}] }},
             options: {{
               responsive: true,
               maintainAspectRatio: false,
@@ -305,53 +255,38 @@ def dashboard():
         }}
 
         function renderList(items, emptyLabel) {{
-          if (!items || items.length === 0) {{
-            return `<li>${{emptyLabel}}</li>`;
-          }}
+          if (!items || items.length === 0) return `<li>${{emptyLabel}}</li>`;
           return items.map(([label, count]) => `<li><strong>${{label}}</strong>: ${{count}}</li>`).join('');
-        }}
-
-        function renderRecentVotes(votes) {{
-          if (!votes || votes.length === 0) {{
-            return '<tr><td colspan="6" class="muted">No votes stored yet.</td></tr>';
-          }}
-          return votes.map((vote) => `
-            <tr>
-              <td>${{vote.doc_id || ''}}</td>
-              <td>${{vote.user_id || ''}}</td>
-              <td>${{vote.poll_id || ''}}</td>
-              <td>${{vote.choice || ''}}</td>
-              <td>${{vote.edge_id || ''}}</td>
-              <td>${{vote.timestamp || ''}}</td>
-            </tr>
-          `).join('');
         }}
 
         function renderSummary(data) {{
           const totalVotes = document.getElementById('totalVotes');
           const uniqueEdges = document.getElementById('uniqueEdges');
           const choicesSeen = document.getElementById('choicesSeen');
-          const recentDocsShown = document.getElementById('recentDocsShown');
+          const avgWorker = document.getElementById('avgWorker');
+          const minWorker = document.getElementById('minWorker');
+          const maxWorker = document.getElementById('maxWorker');
+          const avgFirestoreWrite = document.getElementById('avgFirestoreWrite');
+          const minFirestoreWrite = document.getElementById('minFirestoreWrite');
+          const maxFirestoreWrite = document.getElementById('maxFirestoreWrite');
           const choiceList = document.getElementById('choiceList');
           const edgeList = document.getElementById('edgeList');
-          const recentVotesBody = document.getElementById('recentVotesBody');
 
           if (totalVotes) totalVotes.textContent = data.total_votes;
           if (uniqueEdges) uniqueEdges.textContent = data.unique_edges.length;
           if (choicesSeen) choicesSeen.textContent = data.chart_labels.choices.length;
-          if (recentDocsShown) recentDocsShown.textContent = data.recent_votes.length;
+          if (avgWorker) avgWorker.textContent = data.latency_stats.worker.avg_ms !== null ? `${{data.latency_stats.worker.avg_ms.toFixed(3)}} ms` : 'No data';
+          if (minWorker) minWorker.textContent = data.latency_stats.worker.min_ms !== null ? `${{data.latency_stats.worker.min_ms.toFixed(3)}} ms` : 'No data';
+          if (maxWorker) maxWorker.textContent = data.latency_stats.worker.max_ms !== null ? `${{data.latency_stats.worker.max_ms.toFixed(3)}} ms` : 'No data';
+          if (avgFirestoreWrite) avgFirestoreWrite.textContent = data.latency_stats.firestore_write.avg_ms !== null ? `${{data.latency_stats.firestore_write.avg_ms.toFixed(3)}} ms` : 'No data';
+          if (minFirestoreWrite) minFirestoreWrite.textContent = data.latency_stats.firestore_write.min_ms !== null ? `${{data.latency_stats.firestore_write.min_ms.toFixed(3)}} ms` : 'No data';
+          if (maxFirestoreWrite) maxFirestoreWrite.textContent = data.latency_stats.firestore_write.max_ms !== null ? `${{data.latency_stats.firestore_write.max_ms.toFixed(3)}} ms` : 'No data';
           if (choiceList) choiceList.innerHTML = renderList(data.choice_counts, 'No votes yet');
           if (edgeList) edgeList.innerHTML = renderList(data.edge_counts, 'No votes yet');
-          if (recentVotesBody) recentVotesBody.innerHTML = renderRecentVotes(data.recent_votes);
-
-          const updatedPill = document.querySelector('.pill');
-          if (updatedPill) {{
-            updatedPill.textContent = `Project: ${{data.project_id}} · Collection: ${{data.collection_name}} · Updated: ${{data.generated_at}}`;
-          }}
         }}
 
-        let choiceChart = makeDoughnut(choiceCtx, {json.dumps(choice_labels)}, {json.dumps(choice_values)}, 'Votes by Choice');
-        let edgeChart = makeBar(edgeCtx, {json.dumps(edge_labels)}, {json.dumps(edge_values)}, 'Votes by Edge');
+        let choiceChart = makeDoughnut(choiceCtx, {json.dumps([label for label, _ in summary['choice_counts']])}, {json.dumps([count for _, count in summary['choice_counts']])}, 'Votes by Choice');
+        let edgeChart = makeBar(edgeCtx, {json.dumps([label for label, _ in summary['edge_counts']])}, {json.dumps([count for _, count in summary['edge_counts']])}, 'Votes by Edge');
 
         async function refreshSummary() {{
           try {{
@@ -361,7 +296,6 @@ def dashboard():
               throw new Error(`HTTP ${{response.status}}`);
             }}
             const data = await response.json();
-
             document.title = `Vote Observer · ${{data.total_votes}} votes`;
             renderSummary(data);
             if (choiceChart) {{
@@ -381,9 +315,7 @@ def dashboard():
         }}
 
         renderSummary({json.dumps(summary)});
-        if (!loadError) {{
-          setInterval(refreshSummary, 5000);
-        }}
+        if (!loadError) setInterval(refreshSummary, 5000);
       </script>
     </body>
     </html>

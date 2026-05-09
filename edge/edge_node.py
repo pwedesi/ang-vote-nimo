@@ -11,12 +11,14 @@ EDGE_ID = os.environ.get("EDGE_ID") or str(random.randint(1, 999))
 
 
 def generate_vote():
+    created_at = time.time()
     return {
         "edge_id": EDGE_ID,
         "user_id": str(uuid.uuid4()),
         "poll_id": "poll_1",
         "choice": random.choice(["A", "B", "C"]),
-        "timestamp": time.time(),
+        "timestamp": created_at,
+        "created_at": created_at,
     }
 
 

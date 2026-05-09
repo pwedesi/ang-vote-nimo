@@ -32,6 +32,8 @@ def process_vote(message):
     Ensure safe handling of malformed data.
     """
     try:
+        worker_started_at = time.perf_counter()
+        processed_at = time.time()
         # Step 1: Receive and decode message
         vote = json.loads(message.data.decode("utf-8"))
         logger.info("Received vote user_id=%s poll_id=%s edge_id=%s", vote.get("user_id"), vote.get("poll_id"), vote.get("edge_id"))
@@ -51,8 +53,36 @@ def process_vote(message):
             return
         
         # Step 3: Store Processed Votes in Firestore
+        vote["processed_at"] = processed_at
+        if "created_at" in vote:
+            end_to_end_latency_ms = round((processed_at - float(vote["created_at"])) * 1000, 3)
+            if end_to_end_latency_ms >= 0:
+                vote["end_to_end_latency_ms"] = end_to_end_latency_ms
+        if "received_at" in vote:
+            api_to_worker_latency_ms = round((processed_at - float(vote["received_at"])) * 1000, 3)
+            if api_to_worker_latency_ms >= 0:
+                vote["api_to_worker_latency_ms"] = api_to_worker_latency_ms
+        firestore_start = time.perf_counter()
         doc_ref.set(vote)
+        firestore_write_ms = round((time.perf_counter() - firestore_start) * 1000, 3)
+        worker_total_ms = round((time.perf_counter() - worker_started_at) * 1000, 3)
+        vote["firestore_write_ms"] = firestore_write_ms
+        vote["worker_total_ms"] = worker_total_ms
+        vote["cloud_latency_ms"] = worker_total_ms
+        doc_ref.update(
+            {
+                "firestore_write_ms": firestore_write_ms,
+                "worker_total_ms": worker_total_ms,
+                "cloud_latency_ms": worker_total_ms,
+            }
+        )
         logger.info("Vote stored in Firestore doc_id=%s", doc_id)
+        logger.info(
+            "Vote latency doc_id=%s worker_total_ms=%s firestore_write_ms=%s",
+            doc_id,
+            worker_total_ms,
+            firestore_write_ms,
+        )
         
         # Step 4: Acknowledge message after successful processing
         message.ack()

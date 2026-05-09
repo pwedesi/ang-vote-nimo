@@ -2,6 +2,7 @@ from flask import Flask, request
 from google.cloud import pubsub_v1
 import json
 import os
+import time
 
 app = Flask(__name__)
 
@@ -18,6 +19,7 @@ def home():
 @app.route("/vote", methods=["POST"])
 def receive_vote():
     vote = request.get_json()
+    request_started_at = time.perf_counter()
 
     if not vote:
         print("Invalid payload received")
@@ -31,16 +33,21 @@ def receive_vote():
             return {"error": f"Missing {field}"}, 400
 
     try:
+        vote["received_at"] = time.time()
         data = json.dumps(vote).encode("utf-8")
 
-        publisher.publish(topic_path, data)
+        publish_future = publisher.publish(topic_path, data)
+        publish_future.result(timeout=10)
+        vote["published_at"] = time.time()
+        vote["api_publish_ms"] = round((time.perf_counter() - request_started_at) * 1000, 3)
 
         # ✅ LOGGING HERE
         print(
             f"Vote accepted | "
             f"User: {vote['user_id']} | "
             f"Choice: {vote['choice']} | "
-            f"Edge: {vote['edge_id']}"
+            f"Edge: {vote['edge_id']} | "
+            f"API publish: {vote['api_publish_ms']:.3f} ms"
         )
 
         return {"status": "accepted"}, 200
