@@ -1,8 +1,6 @@
-
 # ang-vote-nimo
 
 Distributed voting system built on Google Cloud.
-
 
 Reflection - Hans Matthew E. Del Mundo
 
@@ -10,18 +8,27 @@ Implementing and testing the distributed voting system made the difference betwe
 
 We also ran into the usual distributed-systems pain points while deploying and debugging the project on GCP. IAM permissions, Cloud Run configuration, Pub/Sub setup, and service-to-service wiring all had to be correct before the pipeline behaved reliably, as well as issues with the clocks on the various instances differing, causing some issues benchmarking, and debugging was harder because failures could happen in different places without breaking the whole system immediately. I do not fully agree with the way the worker was suggested to be implemented: pull-based consumption makes more sense for persistent always-on machines like 24/7 VMs, but in our case, where the workload runs on Cloud Run, it would have been more beneficial to use Pub/Sub push delivery because Cloud Run services are meant to be ephemeral and event-driven. Even so, I complied with the suggested implementation, and it still demonstrated the distributed behavior required for the lab; however, I think the persistent pull model is not idiomatic for Cloud Run plus Pub/Sub and adds unnecessary complexity compared with a push-based approach, Plus the added risk that cloud run does not in fact guarantee the instances will persistently and reliably run, so after some time I expect the current setup to turn off at some point.
 
+Reflection - Ira Chloie C. Narisma
+
+Working on the “ang-vote-nimo” project was a meaningful learning experience that helped me better understand how a complete voting system functions from end to end. Through this activity, I was able to see how different parts of a web application such as the user interface, backend logic, and data storage work together to create a working system. It gave me a clearer picture of how user actions like casting a vote are processed, recorded, and then reflected in the results page. This helped me appreciate the importance of proper data flow and system structure in building functional applications.
+
+Aside from the technical side, this project also improved my understanding of real-world system challenges. I realized that even a simple voting application requires careful attention to accuracy, fairness, and data integrity. Small mistakes in logic or structure can affect the entire outcome of the system. It also made me think about how real election systems must be much more secure and reliable, which involves additional layers like authentication, validation, and protection against duplicate or fraudulent votes. Overall, this activity not only strengthened my programming and problem-solving skills but also helped me develop a deeper appreciation for how important well-designed systems are in real-life applications.
+
 Overview
+
 - This repository contains a small distributed voting prototype composed of three components:
-	- `api` — HTTP API service for clients and vote aggregation ([api/main.py](api/main.py)).
-	- `edge` — Edge node that accepts local votes and forwards them ([edge/edge_node.py](edge/edge_node.py)).
-	- `edge` — Multi-edge launcher for timed runs ([edge/run_edges.py](edge/run_edges.py)).
-	- `worker` — Cloud Run HTTP worker that receives Pub/Sub push messages and persists idempotent votes to Firestore ([worker/main.py](worker/main.py)).
+  - `api` — HTTP API service for clients and vote aggregation ([api/main.py](api/main.py)).
+  - `edge` — Edge node that accepts local votes and forwards them ([edge/edge_node.py](edge/edge_node.py)).
+  - `edge` — Multi-edge launcher for timed runs ([edge/run_edges.py](edge/run_edges.py)).
+  - `worker` — Cloud Run HTTP worker that receives Pub/Sub push messages and persists idempotent votes to Firestore ([worker/main.py](worker/main.py)).
 
 Architecture
+
 - Components communicate using cloud messaging and storage (configure Google Cloud Pub/Sub, Firestore or Cloud Storage as needed).
 - Designed for deployment to GCP. Use a service account with appropriate permissions and set `GOOGLE_APPLICATION_CREDENTIALS` to the key file path.
 
 Quickstart (local development)
+
 1. Create and activate a virtual environment:
 
 ```bash
@@ -54,6 +61,7 @@ python run_edges.py --nodes 3 --seconds 20 --api-url "https://vote-api-cm2ntl2x6
 ```
 
 Docker (worker)
+
 - Build and run the worker image:
 
 ```bash
@@ -62,6 +70,7 @@ docker run --rm ang-vote-worker
 ```
 
 Google Cloud setup
+
 - Create a GCP project and service account with required roles (Pub/Sub, Firestore, Cloud Storage as used).
 - Download the service account JSON and set:
 
@@ -78,10 +87,12 @@ gcloud pubsub subscriptions update vote-sub \
 ```
 
 Notes and security
+
 - Do NOT commit service account keys or secrets. The repository `.gitignore` excludes common credential patterns.
 - Adjust cloud configuration (topics, buckets, databases) in each component's configuration or environment variables.
 
 Repository layout
+
 - [api/main.py](api/main.py)
 - [edge/edge_node.py](edge/edge_node.py)
 - [edge/run_edges.py](edge/run_edges.py)
@@ -91,6 +102,7 @@ Repository layout
 - [observer/Dockerfile](observer/Dockerfile)
 
 Vote observer
+
 - A simple Firestore-backed dashboard lives in [observer/main.py](observer/main.py).
 - It shows total votes, counts by choice, counts by edge node, and the most recent stored votes.
 - Local configuration lives in [observer/.env](observer/.env) and points to the service-account JSON file.
@@ -121,4 +133,5 @@ gcloud run deploy vote-observer \
 - Open `GET /` for the dashboard, `GET /api/summary` for JSON, and `GET /healthz` for health checks.
 
 License
+
 - MIT (replace or update as needed)
