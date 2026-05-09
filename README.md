@@ -14,6 +14,12 @@ Working on the “ang-vote-nimo” project was a meaningful learning experience 
 
 Aside from the technical side, this project also improved my understanding of real-world system challenges. I realized that even a simple voting application requires careful attention to accuracy, fairness, and data integrity. Small mistakes in logic or structure can affect the entire outcome of the system. It also made me think about how real election systems must be much more secure and reliable, which involves additional layers like authentication, validation, and protection against duplicate or fraudulent votes. Overall, this activity not only strengthened my programming and problem-solving skills but also helped me develop a deeper appreciation for how important well-designed systems are in real-life applications.
 
+Reflection - Vin Marcus Nicolo F. Gerebise
+
+Implementing the worker in this distributed voting setup helped me see how different the system feels compared to running everything sequentially in one script. In normal operation, the flow was smooth: edge nodes sent votes to the API, Pub/Sub absorbed the traffic, and the worker stored results in Firestore without blocking the API. The biggest lesson for me was that distributed execution improves responsiveness for users because requests can be accepted quickly even when processing happens later. At the same time, it required more discipline in validating payloads and handling duplicates, since messages can arrive more than once and not always in the order I expected.
+
+Under higher vote volume and during failure-recovery tests, I learned that distributed systems are more resilient but also harder to reason about in real time. When processing slowed down, Pub/Sub acted like a buffer and protected the API from overload, but it also made debugging less straightforward because delays can appear between components. Recovery behavior was reassuring: once the worker resumed, queued votes were eventually processed and persisted, which reinforced the importance of idempotency for consistent final results. Overall, the experience taught me that distributed design is less about “faster code” and more about reliability, clear responsibility per service, and careful coordination across independent components.
+
 Overview
 
 - This repository contains a small distributed voting prototype composed of three components:
